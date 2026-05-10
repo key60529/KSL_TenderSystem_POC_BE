@@ -1,0 +1,109 @@
+# Procurement-Ready Summary
+
+| Item | Detail |
+|------|--------|
+| **Project Name** | abc |
+| **Project Title** | edf |
+| **Proposed Budget** | $40.00 |
+| **Required Sections** | Executive Summary, Proposed Solution, Cost Analysis |
+| **Language** | English |
+| **Document Type** | Tender Proposal |
+
+The tender proposal will be structured around the three requested sections, assuming the project is a small-scale engagement within a limited budget. All placeholders are provided for tailoring by the procurement team.
+
+---
+
+# Tender Structure JSON
+
+```json
+{
+  "required_sections": [
+    "Executive Summary",
+    "Proposed Solution",
+    "Cost Analysis"
+  ]
+}
+```
+
+---
+
+# Tender Template JSON
+
+```json
+{
+  "template_name": "Tender Proposal – abc / edf",
+  "project_type": "General Procurement",
+  "language": "en",
+  "document_style": {
+    "page_size": "A4",
+    "orientation": "portrait",
+    "font_family": "Arial",
+    "font_size": 11
+  },
+  "sections": [
+    {
+      "id": "executive_summary",
+      "title": "Executive Summary",
+      "mandatory": true,
+      "content_type": "rich_text",
+      "instruction": "Provide a high-level overview of the project, objectives, and key value proposition.",
+      "placeholders": [
+        "{project_background}",
+        "{project_objectives}",
+        "{proposed_value}",
+        "{budget_overview}"
+      ]
+    },
+    {
+      "id": "proposed_solution",
+      "title": "Proposed Solution",
+      "mandatory": true,
+      "content_type": "rich_text",
+      "instruction": "Describe the technical or service solution being offered, including methodology, approach, and key features.",
+      "subsections": [
+        {
+          "id": "approach_and_methodology",
+          "title": "Approach and Methodology",
+          "content_type": "rich_text",
+          "placeholders": [
+            "{solution_approach}",
+            "{methodology}"
+          ]
+        },
+        {
+          "id": "deliverables",
+          "title": "Deliverables",
+          "content_type": "bullet_list",
+          "placeholders": [
+            "{deliverables_list}"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cost_analysis",
+      "title": "Cost Analysis",
+      "mandatory": true,
+      "content_type": "table",
+      "instruction": "Provide a detailed breakdown of costs within the budget of $40.00.",
+      "columns": [
+        "Cost Category",
+        "Description",
+        "Amount (USD)"
+      ],
+      "placeholders": [
+        "{cost_category_1}",
+        "{cost_description_1}",
+        "{cost_amount_1}",
+        "{cost_total}"
+      ]
+    }
+  ]
+}
+```
+
+---
+
+# Completion Message
+
+The tender structure is ready. Please click the following buttons to download your .docx file.

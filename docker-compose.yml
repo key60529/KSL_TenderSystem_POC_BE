@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16
+    container_name: tender_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: tender_system
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tender_system"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: .
+    container_name: tender_app
+    ports:
+      - "55555:8000"
+    volumes:
+      - ./app:/code/app
+      - ./uploaded_tenders:/code/uploaded_tenders
+    environment:
+      - DATABASE_URL=postgresql://postgres:admin123@db:5432/tender_system
+      # POC dummy user — change these before any real deployment.
+      - SEED_USERNAME=${SEED_USERNAME:-admin_user}
+      - SEED_PASSWORD=${SEED_PASSWORD:-password123}
+      # Dify integration
+      - DIFY_BASE_URL=${DIFY_BASE_URL:-http://localhost:80}
+      - DIFY_API_KEY=${DIFY_API_KEY:-}
+      # Separate API keys for each Dify agent/workflow
+      - DIFY_SCHEME_ANALYSIS_KEY=${DIFY_SCHEME_ANALYSIS_KEY:-}
+      - DIFY_SCORING_KEY=${DIFY_SCORING_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
