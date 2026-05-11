@@ -35,6 +35,7 @@ services:
       - DIFY_API_KEY=${DIFY_API_KEY:-}
       # Separate API keys for each Dify agent/workflow
       - DIFY_SCHEME_ANALYSIS_KEY=${DIFY_SCHEME_ANALYSIS_KEY:-}
+      - DIFY_CHAT_KEY=${DIFY_CHAT_KEY:-}
       - DIFY_SCORING_KEY=${DIFY_SCORING_KEY:-}
     depends_on:
       db:

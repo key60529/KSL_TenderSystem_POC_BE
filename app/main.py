@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from . import database
 from .models import *
-from .routes import projects, tenders, auth, reviews
+from .routes import projects, tenders, auth, reviews, conversations
 from .seed import seed_basic_data
 from pydantic import BaseModel
 import os, shutil
@@ -40,6 +40,7 @@ app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(tenders.router)
 app.include_router(reviews.router)
+app.include_router(conversations.router)
 
 # Define where to save files
 UPLOAD_DIR = "uploaded_tenders"

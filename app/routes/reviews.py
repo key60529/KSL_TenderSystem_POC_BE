@@ -2,13 +2,14 @@
 Reviews router — handles:
   1. Analysing an uploaded tender document to produce a marking scheme.
   2. Scoring multiple tenderer submissions against a saved project's marking scheme.
+  3. Async queue-based scoring with per-file polling.
 """
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
 from .. import models, database, auth
 from ..services import dify_service
-import os, shutil
+import os, shutil, json, threading
 
 router = APIRouter(prefix="/reviews", tags=["Reviews"])
 
@@ -65,6 +66,53 @@ async def analyse_scheme(
         "message": "Marking scheme analysed successfully.",
         "marking_scheme": scheme_output.get("marking_scheme", scheme_output),
     }
+
+
+# ── Initiate chat: upload tender doc → start Dify chatbot conversation ────────
+
+@router.post("/initiate-chat")
+async def initiate_chat(
+    tender_doc: UploadFile = File(..., description="Tender document (PDF or DOCX)"),
+    db: Session = Depends(database.get_db),
+    current_user: models.UserTable = Depends(auth.get_current_user),
+):
+    """
+    Upload a tender document to start a new Dify chatbot conversation.
+
+    1. Runs the Scheme Analysis workflow → extracts marking_scheme JSON.
+    2. Calls /v1/chat-messages with the scheme as context → gets conversation_id.
+    3. Saves a ChatConversationTable record (user_id + conversation_id + title).
+
+    Response shape:
+    {
+      "conversation_id": "<dify-uuid>",
+      "message_id":      "<dify-uuid>",
+      "answer":          "<assistant opening message>",
+      "marking_scheme":  { ... }
+    }
+    """
+    file_path = _save_upload(tender_doc, prefix="chat_init_")
+    try:
+        result = dify_service.initiate_chat_with_document(
+            file_path, user=current_user.username
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Dify error: {str(exc)}")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+    # Persist the conversation record so the sidebar can list it
+    if result.get("conversation_id"):
+        record = models.ChatConversationTable(
+            user_id=current_user.id,
+            conversation_id=result["conversation_id"],
+            title=tender_doc.filename or "Untitled",
+        )
+        db.add(record)
+        db.commit()
+
+    return result
 
 
 # ── Step 8-10: Score tenderer submissions against a project's marking scheme ──
@@ -227,3 +275,162 @@ def get_review_history(
         }
         for r in reviews
     ]
+
+
+# ── Async queue-based scoring ─────────────────────────────────────────────────
+
+def _process_job_files(job_id: int, marking_scheme: dict, username: str):
+    """
+    Background thread: process each ReviewJobFileTable record one-by-one.
+    Opens its own DB session so it is independent from the request session.
+    """
+    db: Session = database.SessionLocal()
+    try:
+        job = db.query(models.ReviewJobTable).filter(models.ReviewJobTable.id == job_id).first()
+        if not job:
+            return
+
+        job.status = "processing"
+        db.commit()
+
+        all_done = True
+        for job_file in job.files:
+            if job_file.status != "pending":
+                continue
+
+            job_file.status = "processing"
+            db.commit()
+
+            try:
+                # Decode stored bytes and score via Dify
+                file_bytes = job_file.file_content.encode("latin-1") if isinstance(job_file.file_content, str) else job_file.file_content
+                outputs = dify_service.score_tenderer_bytes(
+                    file_bytes=file_bytes,
+                    file_name=job_file.file_name,
+                    marking_scheme=marking_scheme,
+                    user=username,
+                )
+                # `overall_summary_json` is a stringified JSON from the workflow
+                raw = outputs.get("overall_summary_json", outputs)
+                if isinstance(raw, str):
+                    parsed = json.loads(raw)
+                else:
+                    parsed = raw
+                job_file.result_json = json.dumps(parsed)
+                job_file.status = "done"
+            except Exception as exc:
+                job_file.status = "failed"
+                job_file.error = str(exc)
+                all_done = False
+
+            db.commit()
+
+        # Mark the overall job
+        failed_count = sum(1 for f in job.files if f.status == "failed")
+        job.status = "done" if failed_count == 0 else ("failed" if failed_count == len(job.files) else "partial")
+        db.commit()
+    finally:
+        db.close()
+
+
+@router.post("/{project_id}/score-async")
+async def score_submissions_async(
+    project_id: int,
+    files: List[UploadFile] = File(..., description="One file per tenderer (PDF or DOCX)"),
+    db: Session = Depends(database.get_db),
+    current_user: models.UserTable = Depends(auth.get_current_user),
+):
+    """
+    Submit multiple tenderer files for async scoring.
+    Returns a job_id immediately. Poll GET /reviews/jobs/{job_id} for status.
+    """
+    project = db.query(models.ProjectTable).filter(
+        models.ProjectTable.id == project_id,
+        models.ProjectTable.owner_id == current_user.id,
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if not project.master_requirements:
+        raise HTTPException(status_code=422, detail="No marking scheme on this project.")
+
+    marking_scheme = project.master_requirements
+
+    # Create the job
+    job = models.ReviewJobTable(project_id=project_id, created_by=current_user.id, status="pending")
+    db.add(job)
+    db.flush()  # get job.id without committing
+
+    # Read file bytes into DB records (store as latin-1 str to survive JSON serialisation)
+    for upload in files:
+        raw_bytes = await upload.read()
+        job_file = models.ReviewJobFileTable(
+            job_id=job.id,
+            file_name=upload.filename,
+            file_content=raw_bytes.decode("latin-1"),
+            status="pending",
+        )
+        db.add(job_file)
+
+    db.commit()
+    db.refresh(job)
+
+    # Fire background thread (non-blocking)
+    t = threading.Thread(
+        target=_process_job_files,
+        args=(job.id, marking_scheme, current_user.username),
+        daemon=True,
+    )
+    t.start()
+
+    return {
+        "job_id": job.id,
+        "project_id": project_id,
+        "file_count": len(files),
+        "status": "pending",
+    }
+
+
+@router.get("/jobs/{job_id}")
+def get_job_status(
+    job_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.UserTable = Depends(auth.get_current_user),
+):
+    """
+    Poll the status of an async scoring job.
+    Returns overall job status plus per-file statuses and (when done) result_json.
+    """
+    job = db.query(models.ReviewJobTable).filter(
+        models.ReviewJobTable.id == job_id,
+        models.ReviewJobTable.created_by == current_user.id,
+    ).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    # Reload to get latest state (important: the background thread commits independently)
+    db.refresh(job)
+    for f in job.files:
+        db.refresh(f)
+
+    files_out = []
+    for f in job.files:
+        parsed_result = None
+        if f.result_json:
+            try:
+                parsed_result = json.loads(f.result_json)
+            except Exception:
+                parsed_result = None
+        files_out.append({
+            "id": f.id,
+            "file_name": f.file_name,
+            "status": f.status,
+            "result": parsed_result,
+            "error": f.error,
+        })
+
+    return {
+        "job_id": job.id,
+        "project_id": job.project_id,
+        "status": job.status,
+        "files": files_out,
+    }

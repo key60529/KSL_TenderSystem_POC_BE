@@ -1,7 +1,8 @@
 import enum
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, JSON, Boolean
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, JSON, Boolean, DateTime, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 from .database import Base  # Note the "." - it means "from this same folder"
 
 from sqlalchemy import Column, Integer, String, ForeignKey, JSON
@@ -102,3 +103,49 @@ class ReviewResultTable(Base):
     comment = Column(String, nullable=True)        # LLM reasoning
 
     review = relationship("TenderReviewTable", back_populates="results")
+
+
+# ── Chat Conversation records ─────────────────────────────────────────────────
+
+class ChatConversationTable(Base):
+    """Stores Dify conversation IDs per user so the sidebar can list them."""
+    __tablename__ = "chat_conversations"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    conversation_id = Column(String, unique=True, nullable=False)
+    title = Column(String, nullable=True)          # filename used as display title
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    owner = relationship("UserTable", backref="conversations")
+
+
+# ── Async scoring job queue ───────────────────────────────────────────────────
+
+class ReviewJobTable(Base):
+    """One async scoring run (one project, multiple files)."""
+    __tablename__ = "review_jobs"
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"))
+    created_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # overall job status: pending | processing | done | failed
+    status = Column(String, default="pending")
+
+    files = relationship("ReviewJobFileTable", back_populates="job", cascade="all, delete-orphan")
+
+
+class ReviewJobFileTable(Base):
+    """Per-file status and result within a ReviewJob."""
+    __tablename__ = "review_job_files"
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, ForeignKey("review_jobs.id"), nullable=False)
+    file_name = Column(String, nullable=False)
+    file_content = Column(Text, nullable=True)     # stored temporarily for background processing
+    # status: pending | processing | done | failed
+    status = Column(String, default="pending")
+    result_json = Column(Text, nullable=True)      # parsed overall_summary_json stored as text
+    error = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    job = relationship("ReviewJobTable", back_populates="files")
