@@ -1,0 +1,33 @@
+# Python junk
+
+__pycache__/
+
+*.py[cod]
+
+*$py.class
+
+.venv/
+
+env/
+
+venv/
+
+.env
+ 
+# Docker & Database
+
+# IMPORTANT: This prevents your local DB data from being pushed
+
+postgres_data/
+ 
+# IDEs
+
+.vscode/
+
+.idea/
+ 
+# OS junk
+
+.DS_Store
+
+Thumbs.db

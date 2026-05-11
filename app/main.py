@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Path, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from . import database
@@ -13,6 +14,20 @@ import requests
 database.Base.metadata.create_all(bind=database.engine)
 
 app = FastAPI()
+
+# Allow the Vue frontend to call the API from a different origin during development.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # This "mounts" your folder so it can be accessed via URL
 app.mount("/download", StaticFiles(directory="uploaded_tenders"), name="download")

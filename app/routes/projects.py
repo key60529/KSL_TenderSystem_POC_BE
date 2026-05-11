@@ -72,17 +72,38 @@ def delete_project(
     db: Session = Depends(database.get_db),
     current_user: models.UserTable = Depends(auth.get_current_user)
 ):
-    project = db.query(models.ProjectTable).filter(models.ProjectTable.id == project_id).first()
+    project = db.query(models.ProjectTable).filter(
+        models.ProjectTable.id == project_id,
+        models.ProjectTable.owner_id == current_user.id
+    ).first()
 
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Prevent non-owners from deleting
-    if project.owner_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Only the owner can delete this project"
-        )
+    # Delete dependent rows first so the project can be removed safely.
+    review_ids = [review.id for review in db.query(models.TenderReviewTable.id).filter(
+        models.TenderReviewTable.project_id == project_id
+    ).all()]
+
+    if review_ids:
+        db.query(models.ReviewResultTable).filter(
+            models.ReviewResultTable.review_id.in_(review_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.TenderReviewTable).filter(
+            models.TenderReviewTable.id.in_(review_ids)
+        ).delete(synchronize_session=False)
+
+    tender_ids = [tender.id for tender in db.query(models.TenderTable.id).filter(
+        models.TenderTable.project_id == project_id
+    ).all()]
+
+    if tender_ids:
+        db.query(models.AttachmentTable).filter(
+            models.AttachmentTable.tender_id.in_(tender_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.TenderTable).filter(
+            models.TenderTable.id.in_(tender_ids)
+        ).delete(synchronize_session=False)
 
     db.delete(project)
     db.commit()
