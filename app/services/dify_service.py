@@ -135,23 +135,32 @@ def score_tenderer_submission(
 
     response.raise_for_status()
 
-    # Capture the workflow_id from the stream
+    # Parse SSE stream — we need the `workflow_finished` event which carries the final outputs
     workflow_id = None
-    final_ai_output = None
+    final_outputs = None
     for line in response.iter_lines():
-        if line:
-            line_str = line.decode("utf-8")
-            if line_str.startswith("data:"):
-                data = _json.loads(line_str[5:])
-                workflow_id = data.get("workflow_id")
-                final_ai_output = data.get("outputs")
-                if workflow_id:
-                    break 
+        if not line:
+            continue
+        line_str = line.decode("utf-8")
+        if not line_str.startswith("data:"):
+            continue
+        try:
+            data = _json.loads(line_str[5:].strip())
+        except Exception:
+            continue
 
-    return {
-        "workflow_id": workflow_id,
-        "results": final_ai_output
-    } # Return the ID to the route
+        event = data.get("event")
+        if event == "workflow_started":
+            workflow_id = data.get("workflow_run_id") or data.get("workflow_id")
+        elif event == "workflow_finished":
+            workflow_id = workflow_id or data.get("workflow_run_id") or data.get("workflow_id")
+            final_outputs = data.get("data", {}).get("outputs", {})
+            break  # done — no need to read further
+
+    logger.info("[score_tenderer_submission] workflow_id=%s outputs_keys=%s", workflow_id, list(final_outputs.keys()) if final_outputs else None)
+
+    # Return the outputs dict directly so the caller can do outputs.get("overall_summary_json")
+    return final_outputs or {}
 
 
 def score_tenderer_bytes(
