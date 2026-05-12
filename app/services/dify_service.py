@@ -143,7 +143,7 @@ def score_tenderer_submission(
             line_str = line.decode("utf-8")
             if line_str.startswith("data:"):
                 data = _json.loads(line_str[5:])
-                workflow_id = data.get("workflow_run_id") or data.get("task_id")
+                workflow_id = data.get("workflow_id")
                 final_ai_output = data.get("outputs")
                 if workflow_id:
                     break 
