@@ -124,13 +124,20 @@ class ChatConversationTable(Base):
 class ReviewJobTable(Base):
     """One async scoring run (one project, multiple files)."""
     __tablename__ = "review_jobs"
+    
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"))
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # NEW FIELD: Stores the Dify workflow execution ID
+    workflow_id = Column(String, nullable=True) 
+    
     # overall job status: pending | processing | done | failed
     status = Column(String, default="pending")
 
+    # Relationships
     files = relationship("ReviewJobFileTable", back_populates="job", cascade="all, delete-orphan")
 
 

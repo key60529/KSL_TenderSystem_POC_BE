@@ -124,125 +124,105 @@ async def score_submissions(
     db: Session = Depends(database.get_db),
     current_user: models.UserTable = Depends(auth.get_current_user),
 ):
-    """
-    Upload one file per tenderer. Each file is sent to the Dify Scoring agent
-    together with the project's saved marking scheme.
-
-    Returns per-tenderer, per-criterion scores and DQ flags.
-
-    Expected Dify agent response per file:
-    {
-      "results": [
-        {
-          "criterion": "...",
-          "score": 8, "max_score": 10,
-          "status": "pass",          // "pass" | "fail" | "dq"
-          "is_disqualified": false,
-          "dq_reason": null,
-          "evidence": "page 3, para 2",
-          "comment": "Meets requirement X."
-        },
-        ...
-      ]
-    }
-    """
-    # 1. Load the project and its marking scheme
+    # 1. Load the project and validation
     project = db.query(models.ProjectTable).filter(
         models.ProjectTable.id == project_id,
         models.ProjectTable.owner_id == current_user.id,
     ).first()
 
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found.")
+    if not project or not project.master_requirements:
+        raise HTTPException(status_code=404, detail="Project or Marking Scheme not found.")
 
-    if not project.master_requirements:
-        raise HTTPException(
-            status_code=422,
-            detail="This project has no marking scheme saved. Please save one first.",
-        )
-
-    marking_scheme = project.master_requirements
-
-    # 2. Create a review run record
-    review = models.TenderReviewTable(
+    # 2. Create the Review Job (The NEW part for tracking)
+    review_job = models.ReviewJobTable(
         project_id=project_id,
         created_by=current_user.id,
+        status="processing" # We set it to processing since we start immediately
     )
-    db.add(review)
+    db.add(review_job)
     db.commit()
-    db.refresh(review)
+    db.refresh(review_job)
 
-    # 3. Process each tenderer file
     tenderer_results = []
     saved_paths = []
 
+    # 3. Process each tenderer file (Original Loop)
     for upload in files:
-        file_path = _save_upload(upload, prefix=f"review_{review.id}_")
+        file_path = _save_upload(upload, prefix=f"review_{review_job.id}_")
         saved_paths.append(file_path)
 
         try:
+            # We call the Dify function. 
+            # Note: If this function returns the workflow_id, we save it to the Job.
             raw_results = dify_service.score_tenderer_submission(
-                file_path, marking_scheme, user=current_user.username
+                file_path, project.master_requirements, user=current_user.username
             )
-        except Exception as exc:
-            # Record failure for this tenderer but continue with others
+            
+            # --- NEW: Update Job with Workflow ID from the first successful call ---
+            if not review_job.workflow_id and isinstance(raw_results, dict):
+                # We assume your service returns a dict containing 'workflow_id' and 'results'
+                review_job.workflow_id = raw_results.get("workflow_id")
+                db.commit()
+
+            # 4. Persist each criterion result (Original Logic kept)
+            # Assuming raw_results['results'] contains the list of scores
+            actual_items = raw_results.get("results", []) if isinstance(raw_results, dict) else raw_results
+            
+            db_results = []
+            is_tenderer_dq = False
+            for item in actual_items:
+                result_row = models.ReviewResultTable(
+                    review_id=review_job.id, # Link to the new job ID
+                    tenderer_file_name=upload.filename,
+                    criterion=item.get("criterion", ""),
+                    score=item.get("score"),
+                    max_score=item.get("max_score"),
+                    status=item.get("status", "fail"),
+                    is_disqualified=item.get("is_disqualified", False),
+                    dq_reason=item.get("dq_reason"),
+                    evidence=item.get("evidence"),
+                    comment=item.get("comment"),
+                )
+                db.add(result_row)
+                db_results.append(result_row)
+                if result_row.is_disqualified:
+                    is_tenderer_dq = True
+
+            db.commit()
+            
+            # Prepare result for the final return JSON
             tenderer_results.append({
                 "tenderer_file": upload.filename,
-                "error": f"Dify agent error: {str(exc)}",
-                "results": [],
+                "is_disqualified": is_tenderer_dq,
+                "results": [
+                    {
+                        "criterion": r.criterion,
+                        "score": r.score,
+                        "status": r.status,
+                    } for r in db_results
+                ],
+            })
+
+        except Exception as exc:
+            tenderer_results.append({
+                "tenderer_file": upload.filename,
+                "error": str(exc),
             })
             continue
 
-        # 4. Persist each criterion result
-        db_results = []
-        is_tenderer_dq = False
-        for item in raw_results:
-            result_row = models.ReviewResultTable(
-                review_id=review.id,
-                tenderer_file_name=upload.filename,
-                criterion=item.get("criterion", ""),
-                score=item.get("score"),
-                max_score=item.get("max_score"),
-                status=item.get("status", "fail"),
-                is_disqualified=item.get("is_disqualified", False),
-                dq_reason=item.get("dq_reason"),
-                evidence=item.get("evidence"),
-                comment=item.get("comment"),
-            )
-            db.add(result_row)
-            db_results.append(result_row)
-            if result_row.is_disqualified:
-                is_tenderer_dq = True
+    # 5. Finalize Job Status
+    review_job.status = "done"
+    db.commit()
 
-        db.commit()
-
-        tenderer_results.append({
-            "tenderer_file": upload.filename,
-            "is_disqualified": is_tenderer_dq,
-            "results": [
-                {
-                    "criterion": r.criterion,
-                    "score": r.score,
-                    "max_score": r.max_score,
-                    "status": r.status,
-                    "is_disqualified": r.is_disqualified,
-                    "dq_reason": r.dq_reason,
-                    "evidence": r.evidence,
-                    "comment": r.comment,
-                }
-                for r in db_results
-            ],
-        })
-
-    # 5. Clean up temp files
+    # Clean up temp files
     for path in saved_paths:
         if os.path.exists(path):
             os.remove(path)
 
     return {
-        "review_id": review.id,
-        "project_id": project_id,
-        "tenderer_count": len(files),
+        "job_id": review_job.id,
+        "workflow_id": review_job.workflow_id,
+        "status": review_job.status,
         "tenderers": tenderer_results,
     }
 
@@ -396,41 +376,30 @@ def get_job_status(
     db: Session = Depends(database.get_db),
     current_user: models.UserTable = Depends(auth.get_current_user),
 ):
-    """
-    Poll the status of an async scoring job.
-    Returns overall job status plus per-file statuses and (when done) result_json.
-    """
+    # 1. Fetch the job from local DB
     job = db.query(models.ReviewJobTable).filter(
         models.ReviewJobTable.id == job_id,
         models.ReviewJobTable.created_by == current_user.id,
     ).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
+    
+    if not job or not job.workflow_id:
+        raise HTTPException(status_code=404, detail="Job or Workflow ID not found.")
 
-    # Reload to get latest state (important: the background thread commits independently)
-    db.refresh(job)
-    for f in job.files:
-        db.refresh(f)
+    # 2. Get the "Live" data from Dify
+    # We pass the workflow_id to our service
+    dify_data = dify_service.get_workflow_run_detail(job.workflow_id)
 
-    files_out = []
-    for f in job.files:
-        parsed_result = None
-        if f.result_json:
-            try:
-                parsed_result = json.loads(f.result_json)
-            except Exception:
-                parsed_result = None
-        files_out.append({
-            "id": f.id,
-            "file_name": f.file_name,
-            "status": f.status,
-            "result": parsed_result,
-            "error": f.error,
-        })
+    # 3. Update local status if Dify is finished
+    if dify_data["status"] != job.status:
+        job.status = dify_data["status"]
+        db.commit()
 
+    # 4. Return only the core info and the Dify "outputs"
     return {
         "job_id": job.id,
-        "project_id": job.project_id,
-        "status": job.status,
-        "files": files_out,
+        "workflow_id": job.workflow_id,
+        "status": dify_data["status"], # succeeded, failed, or running
+        "created_at": dify_data["created_at"],
+        "outputs": dify_data.get("outputs"), # This is the JSON output from your Dify nodes
+        "error": dify_data.get("error")
     }

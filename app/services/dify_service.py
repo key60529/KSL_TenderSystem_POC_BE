@@ -1,4 +1,5 @@
 import requests
+from sqlalchemy.orm import Session
 import os
 import time
 import mimetypes
@@ -103,16 +104,7 @@ def score_tenderer_submission(
     tenderer_file_path: str,
     marking_scheme: dict,
     user: str = "system",
-) -> dict:
-    """
-    Call the Dify 'Scoring' workflow for a single tenderer file.
-    Returns the raw outputs dict from the workflow, which includes
-    `overall_summary_json` (a stringified JSON string).
-
-    Dify workflow input fields:
-      - tender_respon_doc : uploaded file document
-      - marking_scheme    : marking scheme as a JSON string
-    """
+) -> str: # Returns just the workflow_id string
     import json as _json
 
     file_id = upload_file_to_dify(tenderer_file_path, user=user, api_key=DIFY_SCORING_API_KEY)
@@ -126,15 +118,9 @@ def score_tenderer_submission(
             },
             "marking_scheme": marking_scheme,
         },
-        "response_mode": "blocking",
+        "response_mode": "streaming", 
         "user": user,
     }
-
-    logger.info(
-        "[score_tenderer_submission] Sending to Dify | file=%s user=%s scheme_keys=%s",
-        tenderer_file_path, user, list(marking_scheme.keys()) if isinstance(marking_scheme, dict) else type(marking_scheme).__name__,
-    )
-    logger.debug("[score_tenderer_submission] Full payload: %s", payload)
 
     response = requests.post(
         DIFY_SCORING_WORKFLOW_URL,
@@ -143,20 +129,29 @@ def score_tenderer_submission(
             "Content-Type": "application/json",
         },
         json=payload,
+        stream=True, 
         timeout=600,
     )
 
-    if not response.ok:
-        logger.error(
-            "[score_tenderer_submission] Dify returned %s %s\nRequest payload: %s\nResponse body: %s",
-            response.status_code, response.reason,
-            _json.dumps(payload, indent=2, ensure_ascii=False),
-            response.text,
-        )
     response.raise_for_status()
-    result = response.json()
-    outputs = result.get("data", {}).get("outputs", result)
-    return outputs
+
+    # Capture the workflow_id from the stream
+    workflow_id = None
+    final_ai_output = None
+    for line in response.iter_lines():
+        if line:
+            line_str = line.decode("utf-8")
+            if line_str.startswith("data:"):
+                data = _json.loads(line_str[5:])
+                workflow_id = data.get("workflow_run_id") or data.get("task_id")
+                final_ai_output = data.get("outputs")
+                if workflow_id:
+                    break 
+
+    return {
+        "workflow_id": workflow_id,
+        "results": final_ai_output
+    } # Return the ID to the route
 
 
 def score_tenderer_bytes(
@@ -290,3 +285,33 @@ def initiate_chat_with_document(file_path: str, user: str = "system") -> dict:
 
 def upload_and_process_requirement(project_id, file_path):
     print(f"Background task finished for Project {project_id}")
+
+
+def get_workflow_run_detail(workflow_id: str):
+    headers = {
+        "Authorization": f"Bearer {DIFY_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    # Endpoint to get the specific details of a single run
+    url = f"{DIFY_URL}/workflows/run/{workflow_id}"
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Dify returns 'succeeded', 'failed', or 'running'
+        return {
+            "status": data.get("status"),
+            "outputs": data.get("outputs"),
+            "error": data.get("error"),
+            "created_at": data.get("created_at")
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "outputs": None,
+            "error": str(e),
+            "created_at": None
+        }
