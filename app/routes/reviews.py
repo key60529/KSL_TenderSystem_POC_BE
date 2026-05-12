@@ -173,15 +173,7 @@ async def score_submissions(
             for item in actual_items:
                 result_row = models.ReviewResultTable(
                     review_id=review_job.id, # Link to the new job ID
-                    tenderer_file_name=upload.filename,
-                    criterion=item.get("criterion", ""),
-                    score=item.get("score"),
-                    max_score=item.get("max_score"),
-                    status=item.get("status", "fail"),
-                    is_disqualified=item.get("is_disqualified", False),
-                    dq_reason=item.get("dq_reason"),
-                    evidence=item.get("evidence"),
-                    comment=item.get("comment"),
+                    overall_summary_json = item
                 )
                 db.add(result_row)
                 db_results.append(result_row)

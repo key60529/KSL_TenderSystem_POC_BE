@@ -92,15 +92,7 @@ class ReviewResultTable(Base):
     __tablename__ = "review_results"
     id = Column(Integer, primary_key=True, index=True)
     review_id = Column(Integer, ForeignKey("tender_reviews.id"))
-    tenderer_file_name = Column(String)           # original uploaded filename
-    criterion = Column(String)                     # marking scheme criterion label
-    score = Column(Float, nullable=True)           # numeric score (null = not scored)
-    max_score = Column(Float, nullable=True)       # maximum possible score
-    status = Column(String)                        # 'pass' | 'fail' | 'dq'
-    is_disqualified = Column(Boolean, default=False)
-    dq_reason = Column(String, nullable=True)
-    evidence = Column(String, nullable=True)       # quote / location in document
-    comment = Column(String, nullable=True)        # LLM reasoning
+    overall_summary_json = Column(JSONB)
 
     review = relationship("TenderReviewTable", back_populates="results")
 
