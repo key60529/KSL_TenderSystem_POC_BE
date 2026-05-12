@@ -221,13 +221,14 @@ async def score_submissions(
 
 # ── Fetch past review results ─────────────────────────────────────────────────
 
+
 @router.get("/{project_id}/history")
 def get_review_history(
     project_id: int,
     db: Session = Depends(database.get_db),
     current_user: models.UserTable = Depends(auth.get_current_user),
 ):
-    """Return all past review runs for a project."""
+    """Return all past async review jobs for a project."""
     project = db.query(models.ProjectTable).filter(
         models.ProjectTable.id == project_id,
         models.ProjectTable.owner_id == current_user.id,
@@ -236,18 +237,52 @@ def get_review_history(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
 
-    reviews = db.query(models.TenderReviewTable).filter(
-        models.TenderReviewTable.project_id == project_id
-    ).all()
+    jobs = (
+        db.query(models.ReviewJobTable)
+        .filter(
+            models.ReviewJobTable.project_id == project_id,
+            models.ReviewJobTable.created_by == current_user.id,
+        )
+        .order_by(models.ReviewJobTable.created_at.desc())
+        .all()
+    )
 
-    return [
-        {
-            "review_id": r.id,
-            "tenderers": list({res.tenderer_file_name for res in r.results}),
-        }
-        for r in reviews
-    ]
+    history = []
+    for job in jobs:
+        files = []
+        for job_file in sorted(job.files, key=lambda f: f.id):
+            parsed_result = None
+            if job_file.result_json:
+                try:
+                    parsed_result = json.loads(job_file.result_json)
+                except Exception:
+                    parsed_result = None
 
+            files.append(
+                {
+                    "id": job_file.id,
+                    "file_name": job_file.file_name,
+                    "status": job_file.status,
+                    "result": parsed_result,
+                    "error": job_file.error,
+                    "created_at": job_file.created_at.isoformat() if job_file.created_at else None,
+                    "updated_at": job_file.updated_at.isoformat() if job_file.updated_at else None,
+                }
+            )
+
+        history.append(
+            {
+                "job_id": job.id,
+                "project_id": job.project_id,
+                "status": job.status,
+                "workflow_id": job.workflow_id,
+                "created_at": job.created_at.isoformat() if job.created_at else None,
+                "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+                "files": files,
+            }
+        )
+
+    return history
 
 # ── Async queue-based scoring ─────────────────────────────────────────────────
 
