@@ -2,6 +2,9 @@ import requests
 import os
 import time
 import mimetypes
+import logging
+
+logger = logging.getLogger(__name__)
 
 DIFY_API_KEY = os.getenv("DIFY_API_KEY", "app-UnhDDkWMmnpIj70EcEVfkomo")
 DIFY_URL = os.getenv("DIFY_BASE_URL", "http://localhost:80")
@@ -81,6 +84,13 @@ def analyse_marking_scheme(file_path: str, user: str = "system") -> dict:
         },
         json=payload,
     )
+    if not response.ok:
+        logger.error(
+            "[analyse_marking_scheme] Dify returned %s %s\nRequest payload: %s\nResponse body: %s",
+            response.status_code, response.reason,
+            payload,
+            response.text,
+        )
     response.raise_for_status()
     result = response.json()
     # Dify workflow output lives under data.outputs
@@ -98,12 +108,18 @@ def score_tenderer_submission(
     Call the Dify 'Scoring' workflow for a single tenderer file.
     Returns the raw outputs dict from the workflow, which includes
     `overall_summary_json` (a stringified JSON string).
+
+    Dify workflow input fields:
+      - tender_respon_doc : uploaded file document
+      - marking_scheme    : marking scheme as a JSON string
     """
+    import json as _json
+
     file_id = upload_file_to_dify(tenderer_file_path, user=user, api_key=DIFY_SCORING_API_KEY)
 
     payload = {
         "inputs": {
-            "tenderer_document": {
+            "tender_respon_doc": {
                 "transfer_method": "local_file",
                 "upload_file_id": file_id,
                 "type": "document",
@@ -114,6 +130,12 @@ def score_tenderer_submission(
         "user": user,
     }
 
+    logger.info(
+        "[score_tenderer_submission] Sending to Dify | file=%s user=%s scheme_keys=%s",
+        tenderer_file_path, user, list(marking_scheme.keys()) if isinstance(marking_scheme, dict) else type(marking_scheme).__name__,
+    )
+    logger.debug("[score_tenderer_submission] Full payload: %s", payload)
+
     response = requests.post(
         DIFY_SCORING_WORKFLOW_URL,
         headers={
@@ -123,6 +145,14 @@ def score_tenderer_submission(
         json=payload,
         timeout=600,
     )
+
+    if not response.ok:
+        logger.error(
+            "[score_tenderer_submission] Dify returned %s %s\nRequest payload: %s\nResponse body: %s",
+            response.status_code, response.reason,
+            _json.dumps(payload, indent=2, ensure_ascii=False),
+            response.text,
+        )
     response.raise_for_status()
     result = response.json()
     outputs = result.get("data", {}).get("outputs", result)
@@ -208,14 +238,26 @@ def initiate_chat_with_document(file_path: str, user: str = "system") -> dict:
     )
     workflow_response.raise_for_status()
     outputs = workflow_response.json().get("data", {}).get("outputs", {})
-    marking_scheme = outputs.get("marking_scheme", {})
+    raw_scheme = outputs.get("marking_scheme", {})
+
+    # The workflow may return the marking scheme as a stringified JSON string —
+    # parse it so we can re-serialise it cleanly for the chat opening query.
+    import json as _json
+    if isinstance(raw_scheme, str):
+        try:
+            marking_scheme = _json.loads(raw_scheme)
+        except Exception:
+            marking_scheme = raw_scheme  # keep as-is if unparseable
+    else:
+        marking_scheme = raw_scheme
 
     # ── Step 2: open a chat conversation with the marking scheme as context ───
-    import json as _json
+    # Wrap the scheme in a ```json ... ``` block so Chat.vue hides the raw JSON
+    # from the message bubble (renderMarkdown strips json code blocks).
     opening_query = (
         f"I have uploaded a tender document. "
         f"Here is the extracted marking scheme:\n\n"
-        f"```json\n{_json.dumps(marking_scheme, indent=2)}\n```\n\n"
+        f"```json\n{_json.dumps(marking_scheme, indent=2, ensure_ascii=False)}\n```\n\n"
         f"Please review this marking scheme and let me know if you would like "
         f"to adjust any criteria, weights, or requirements before we proceed."
     )

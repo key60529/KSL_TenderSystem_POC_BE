@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from .. import models, database, auth
 from ..services import dify_service
-import os, shutil, json, threading
+import os, shutil, json, threading, base64
 
 router = APIRouter(prefix="/reviews", tags=["Reviews"])
 
@@ -302,8 +302,8 @@ def _process_job_files(job_id: int, marking_scheme: dict, username: str):
             db.commit()
 
             try:
-                # Decode stored bytes and score via Dify
-                file_bytes = job_file.file_content.encode("latin-1") if isinstance(job_file.file_content, str) else job_file.file_content
+                # Decode base64-stored bytes and score via Dify
+                file_bytes = base64.b64decode(job_file.file_content) if isinstance(job_file.file_content, str) else job_file.file_content
                 outputs = dify_service.score_tenderer_bytes(
                     file_bytes=file_bytes,
                     file_name=job_file.file_name,
@@ -360,13 +360,13 @@ async def score_submissions_async(
     db.add(job)
     db.flush()  # get job.id without committing
 
-    # Read file bytes into DB records (store as latin-1 str to survive JSON serialisation)
+    # Read file bytes into DB records — base64-encode to avoid NUL byte issues in PostgreSQL
     for upload in files:
         raw_bytes = await upload.read()
         job_file = models.ReviewJobFileTable(
             job_id=job.id,
             file_name=upload.filename,
-            file_content=raw_bytes.decode("latin-1"),
+            file_content=base64.b64encode(raw_bytes).decode("ascii"),
             status="pending",
         )
         db.add(job_file)

@@ -16,15 +16,11 @@ database.Base.metadata.create_all(bind=database.engine)
 app = FastAPI()
 
 # Allow the Vue frontend to call the API from a different origin during development.
+# POC: allow all origins so VS Code Simple Browser, Docker, and local dev all work.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,   # must be False when allow_origins="*"
     allow_methods=["*"],
     allow_headers=["*"],
 )
