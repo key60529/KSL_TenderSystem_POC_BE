@@ -62,9 +62,17 @@ async def analyse_scheme(
         if os.path.exists(file_path):
             os.remove(file_path)
 
+    raw = scheme_output.get("marking_scheme", scheme_output)
+    if isinstance(raw, str):
+        import json as _json
+        try:
+            raw = _json.loads(raw)
+        except Exception:
+            pass  # leave as-is if unparseable
+
     return {
         "message": "Marking scheme analysed successfully.",
-        "marking_scheme": scheme_output.get("marking_scheme", scheme_output),
+        "marking_scheme": raw,
     }
 
 
